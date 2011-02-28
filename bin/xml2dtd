@@ -1,0 +1,124 @@
+#!/usr/local/bin/ruby
+
+# INPUT: XML file(s)
+# OUTPUT: A DTD for the XML file(s)
+
+# What questions does this utility answer?
+# Which elements are used?
+# Which attributes are used per element?
+# How are elements combined to structure a document?
+
+if __FILE__ == $0
+
+	# get command-line arguments
+	
+	require 'optparse'
+	options = {}
+	
+	OptionParser.new do |opts|
+		opts.banner = "Usage: xml2dtd <input> <output> [options]"
+		opts.on("-v", "--[no-]verbose", "Run verbosely") do |v|
+			options[:verbose] = v
+		end
+		opts.on("-d", "--database FILE", String, "Path to database") do |db|
+			options[:database] = db
+		end
+		opts.on("-p", "--patterns PATTERNS", Array, "File name patterns") do |p|
+			options[:patterns] = p
+		end					
+	end.parse!
+		
+	# validate user input
+	
+	begin
+		raise ArgumentError, "wrong number of arguments (#{ARGV.size} not 2)" unless ARGV.size == 2
+		raise "input file or directory does not exist" unless File.exist?(ARGV[0])
+		raise "output file already exists" if File.exist?(ARGV[1])
+	rescue Exception => e
+		warn e.message
+		warn e.backtrace.join("\n") if options[:verbose]
+		exit
+	end
+	
+	# initialize with user input and defaults
+
+	begin
+	
+		patterns = options[:patterns] ||= %w{*.xml *.xhtml}
+		
+		if File.directory?(ARGV[0])
+			input_files = Dir.glob(patterns.map{|p| "#{ARGV[0]}/#{p}" })
+		else
+			input_files = Array.new(1, ARGV[0])
+		end
+		
+		puts "Found #{input_files.size} XML files" if options[:verbose]					
+
+		output_file = ARGV[1]
+		db_file = options[:database] ||= "#{File.basename(output_file, '.*')}.sqlite3"
+
+		base_path = File.dirname File.dirname($0)
+		path_to_db_template = "#{base_path}/db/template.sqlite3"
+		path_to_db_file = "#{base_path}/db/#{db_file}"
+		
+		File.delete(path_to_db_file) if File.exist?(path_to_db_file)
+		puts "Deleted old database" if options[:verbose]
+		
+		require 'ftools'
+		File.copy(path_to_db_template, path_to_db_file)
+		puts "Copied #{path_to_db_template} to #{path_to_db_file}" if options[:verbose]		
+		
+	rescue Exception => e
+		warn e.message
+		warn e.backtrace.join("\n") if options[:verbose]
+		exit
+	end
+
+	begin
+
+		# initialize database	
+	
+		require 'rubygems'
+		require 'sqlite3'
+		require 'rexml/document'
+		
+		db = SQLite3::Database.new(path_to_db_file)
+	
+		file_count = 0
+		element_count = 1
+	
+		input_files.each do |input_file|
+			file = File.new(input_file)
+			begin
+				doc = REXML::Document.new(file)
+			rescue REXML::ParseException => e
+				warn e.message
+				warn e.backtrace.join("\n") if options[:verbose]
+				next
+			end
+			doc.root.elements.each('//*') do |e| 
+				if e.node_type == :element
+					db.transaction
+					db.execute("insert into elements (id, name, parent_name, file_name) values (?, ?, ?, ?)", element_count, e.name, e.parent.name, File.basename(input_file)) do |sql|
+					end
+					e.attributes.each_key do |k|
+						db.execute("insert into attributes(name, value, element_name, element_id) values (?, ?, ?, ?)", k, e.attributes[k], e.name, element_count)
+					end
+					db.commit
+					element_count += 1
+				end
+			end
+			file_count += 1
+		end
+
+	rescue Exception => e
+		warn e.message
+		warn e.backtrace.join("\n") if options[:verbose]
+		exit	
+	end
+	
+	puts "Processed #{file_count} files"
+	puts "Done" if options[:verbose]
+	
+end
+
